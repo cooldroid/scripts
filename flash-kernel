@@ -208,7 +208,7 @@ function device_flags() {
             if [[ -z ${CLANG_FOLDER} ]]; then
                 case ${MODE} in
                     "personal") CLANG_FOLDER=/opt/clang-7.x ;;
-                    *) CLANG_FOLDER=/opt/clang-7.x ;;
+                    *) VAR=$(ls -dt -- /opt/aosp-clang/*/ | head -n1); CLANG_FOLDER=${VAR::-1} ;;
                 esac
             fi
 
@@ -216,7 +216,13 @@ function device_flags() {
             DEVICE_NAME_GITHUB=${DEVICE}
             DEVICE_NAME_WEB=${DEVICE}
 
-            [[ -z ${GCC_FOLDER} ]] && GCC_FOLDER="/opt/linaro-gcc"
+            if [[ -z ${GCC_FOLDER} ]]; then
+            case ${MODE} in
+                "personal") GCC_FOLDER="/opt/linaro-gcc" ;;
+                *) GCC_FOLDER="/opt/aosp-gcc" ;;
+            esac
+                PREBUILT_MOD=false
+            fi
 
             MATCH_FLAG="${DEVICE_NAME_FILE}-v${VERSION::1}"
 
@@ -266,7 +272,7 @@ function device_flags() {
 function generate_variables() {
     # Folders
     SOURCE_FOLDER=${KERNEL_FOLDER}/flash/${DEVICE_NAME_GITHUB}
-    OUT_FOLDER=${SOURCE_FOLDER}/out
+    OUT_FOLDER=/media/kernel/flash/out-${DEFCONFIG%_defconfig}
     ANYKERNEL2_FOLDER=${KERNEL_FOLDER}/flash/anykernel2-${DEVICE_NAME_GITHUB}
     FILE_MOVE_HEAD=${WEB_FOLDER}/downloads
 
@@ -290,9 +296,10 @@ function generate_variables() {
 
     # Compilation variables
     ARCHITECTURE=arm64
+    export CCACHE_DIR="/media/kernel/.ccache-${DEFCONFIG%_defconfig}"
 
     # Normal 64-bit GCC toolchain
-    GCC=$(find ${GCC_FOLDER}/bin \( -type f -o -type l \) -name '*-gcc' | head -n1)
+    GCC=$(find ${GCC_FOLDER}/bin \( -type f -o -type l \) -name 'aarch64-*-gcc' | head -n1)
     [[ -z ${GCC} ]] && die "64-bit GCC toolchain could not be found!"
     CC=${GCC%gcc}
 
@@ -405,7 +412,7 @@ function kmake() {
 # Setup compilation
 function generate_version() {
     # Generate kernel version
-    KVER=$(make kernelversion)
+    KVER=$(make ${EXTRA_MAKE_FLAGS} kernelversion)
 
     # This is set in the defconfig
     CONFIG_LOCALVERSION="-FlashKernel"
@@ -440,6 +447,13 @@ function generate_version() {
     if [[ $( git diff-index --name-only HEAD ) ]]; then
         DIRTY="-dirty"
         LOCALVERSION="${LOCALVERSION}${DIRTY}"
+    fi
+
+    # If EXTRAVERSION is present in EXTRA_MAKE_FLAGS
+    if [[ ${EXTRA_MAKE_FLAGS} = *"EXTRAVERSION"* ]];then
+        LOCALVERSION_BASELINE=$(echo ${EXTRA_MAKE_FLAGS} | sed -r 's/[[:alnum:]]+=/\n&/g' | awk -F= '$1=="EXTRAVERSION"{print $2}')
+        LOCALVERSION_BASELINE=${LOCALVERSION_BASELINE#"-"}-${DEVICE_NAME_FILE}
+        LOCALVERSION=
     fi
 
     # Generate first line variable
@@ -500,7 +514,7 @@ function build_kernel() {
     git clean -dfx ${HIDDEN_COMMANDS:+ "-q"}
 
     # Point to proper defconfig and generate version files
-    kmake ${DEFCONFIG} prepare
+    kmake ${EXTRA_MAKE_FLAGS} ${DEFCONFIG} prepare
 
     # Notify Telegram of build starting
     if [[ ${TG} && ${ALREADY_NOTIFIED} != true ]]; then
@@ -565,12 +579,30 @@ function move_kernel_files() {
         if [[ -n ${MODULES} ]]; then
             MODULES_FOLDER=${ANYKERNEL2_FOLDER}/ramdisk/modules
             mkdir -p "${MODULES_FOLDER}"
+            if [ ! -z ${PREBUILT_MOD} ] && [ "${PREBUILT_MOD}" == "true" ]; then
+                #cp -R "${HOME}/modules/"* "${MODULES_FOLDER}"
+                if [ -f "${HOME}/modules/qca_cld3_wlan.ko" ]; then
+                    cp ${HOME}/modules/qca_cld3_wlan.ko ${OUT_FOLDER}/drivers/staging/qcacld-3.0/wlan.ko
+                fi
+                if [ -f "${HOME}/modules/msm_11ad_proxy.ko" ]; then
+                    cp ${HOME}/modules/msm_11ad_proxy.ko ${OUT_FOLDER}/drivers/platform/msm/msm_11ad/msm_11ad_proxy.ko
+                fi
+                if [ -f "${HOME}/modules/wil6210.ko" ]; then
+                    cp ${HOME}/modules/wil6210.ko ${OUT_FOLDER}/drivers/net/wireless/ath/wil6210/wil6210.ko
+                fi
+            fi
             for MOD in ${MODULES}; do
-                "${CC}"strip --strip-unneeded "${MOD}"
+                if [ ! -z ${PREBUILT_MOD} ] && [ "${PREBUILT_MOD}" == "true" ]; then
+                    "${CC}"strip --strip-debug "${MOD}"
+                else
+                    "${CC}"strip --strip-unneeded "${MOD}"
+                fi
+                if [ -f ${OUT_FOLDER}/scripts/sign-file ]; then
                 "${OUT_FOLDER}"/scripts/sign-file sha512 \
                                                   "${OUT_FOLDER}/certs/signing_key.pem" \
                                                   "${OUT_FOLDER}/certs/signing_key.x509" \
                                                   "${MOD}"
+                fi
                 cp "${MOD}" "${MODULES_FOLDER}"
             done
         fi
@@ -584,7 +616,9 @@ function build_kernel_op5() {
 
     for OS in ${OS_LIST}; do
         ANYKERNEL2_SUB_FOLDER="/kernels/${OS,,}"
-        DEFCONFIG=flash-${OS,,}_defconfig
+        if [[ -z ${DEFCONFIG} ]]; then
+            DEFCONFIG="flash-${OS,,}_defconfig"
+        fi
         OS_STRING="${OS} "
         build_kernel
         ALREADY_NOTIFIED=true
@@ -698,11 +732,11 @@ function setup_folders() {
         # Clean old test builds
         cd "${FILE_MOVE}/.." || die "Shift to zip folder failed!"
         rm -rf {alpha,beta,rc,tmp}/*
-        git add .
-        if [[ -n $(git status --porcelain) ]]; then
-            git commit --gpg-sign ${HIDDEN_COMMANDS:+ "--quiet"} --signoff --message "${DEVICE_NAME_FILE}: Remove old test builds"
-            git push ${HIDDEN_COMMANDS:+ "--quiet"}
-        fi
+        #git add .
+        #if [[ -n $(git status --porcelain) ]]; then
+        #    git commit --gpg-sign ${HIDDEN_COMMANDS:+ "--quiet"} --signoff --message "${DEVICE_NAME_FILE}: Remove old test builds"
+        #    git push ${HIDDEN_COMMANDS:+ "--quiet"}
+        #fi
 
         # Move the old files to an archive folder unless no clean is requested
         if [[ ! ${NOCLEAN} ]]; then
@@ -828,11 +862,11 @@ function after_build_tasks () {
         setup_folders
         move_flashable_files
 
-        if [[ ${MODE} != "personal" ]]; then
-            generate_changelog
-            [[ ${MODE} != "tmp" ]] && push_flashable_files
-            [[ ! ${NOT_STABLE} ]] && tag_stable
-        fi
+        #if [[ ${MODE} != "personal" ]]; then
+        #    generate_changelog
+        #    [[ ${MODE} != "tmp" ]] && push_flashable_files
+        #    [[ ! ${NOT_STABLE} ]] && tag_stable
+        #fi
 
         echo
     fi
@@ -844,6 +878,7 @@ function ending_info() {
     header "SCRIPT FINISHED!"
 
     END=$(date +"%s")
+    LOG=$HOME/script.log
     DURATION=$(format_time "${START}" "${END}")
 
     echo "\n$(date +"%m/%d/%Y %H:%M:%S"): $(basename "${BASH_SOURCE[0]}") ${PARAMS}" >> "${LOG}"

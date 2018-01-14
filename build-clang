@@ -25,7 +25,7 @@
 ###############
 
 # Folder that will house the source and build files
-MAIN_FOLDER=${HOME}/toolchains/clang
+MAIN_FOLDER=/media/android/toolchain/clang
 
 # Folder that will hold the main LLVM source
 LLVM_FOLDER=${MAIN_FOLDER}/llvm

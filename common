@@ -34,6 +34,8 @@ OS=$(UNAME=$(uname); echo "${UNAME,,}")
 SCRIPTS_FOLDER=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 BIN_FOLDER=${SCRIPTS_FOLDER}/bin
 
+HOME=/media/android/roms/nathanchance
+
 # Common locations amongst scripts
 KERNEL_FOLDER=${HOME}/kernels
 MISC_FOLDER=${HOME}/misc
